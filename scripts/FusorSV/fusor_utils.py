@@ -26,12 +26,16 @@ def get_identifier(length=1000):
     return ''.join(random.sample(hashlib.md5(socket.gethostname()).hexdigest(),min(l,hashlib.md5().digestsize)))
 
 #given a partition P[t][b][c][s] write a josn for each
+# P[t][b]{caller:{sample_name:[ele1, ele2,...,eleN]}}, b is bin size (variation size)
 def write_partitions_by_sample(sname_partition_path,P):
     for t in P:
         for b in P[t]:
             for c in P[t][b]:
-                for s in P[t][b][c]:
+                for s in P[t][b][c]: # TODO: We should single sample so no need to use for loop.
                     path = sname_partition_path+'_S%s_T%s_B%s.pickle'%(c,t,b)
+                    # P[t][b][c][s] is [ele1, ele2,...,eleN]
+                    # ele spec: [ref_begin, ref_end, [[0, 0]], 1.0, 1.0, {caller_ID: set([series_ID_in_VCF])}]
+                    # example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
                     S = {t:{b:{c:{s:P[t][b][c][s]}}}}
                     with open(path,'wb') as f:
                         pickle.dump(S,f)
@@ -214,20 +218,25 @@ def filter_samples2(Q,R,ids=[-1]):
 
 #new pooled optimal group selection
 #slice out the samples for a [[svult_1,sname_1],[svult_2,sname_2],...[svult_s,snmae_s]]
+# L: [sample_name, S]
+# S[c][t][ele1, ele2,...,eleN]: c: caller and t: type
+# Return: Q[t][c]{sample_name: [ele1, ele2,...,eleN]}
 def slice_samples(L,exclude=[]):
     #do empty for types here for downstream binning
     all_types = set([])
-    for i in L:
-        for c in i[1]:
+    # TODO: since len(L) == 1, no need to use for loop.
+    for i in L: # L should be length == 1
+        for c in i[1]: # c points to S
             for t in i[1][c]:
                 all_types.add(t)
-    all_types    = list(all_types)      
+    all_types    = list(all_types) # all types of this sample
     #target_types = list(set([j for x in [s[1][k].keys() for s in L] for j in x])) #target types
     Q = {}
     for t in all_types:
         Q[t] = {}
-        for i in range(len(L)): #L[i][0] is sname, L[i][1] is the data
-            if not L[i][0] in exclude: 
+        # TODO: since len(L) == 1, no need to use for loop.
+        for i in range(len(L)): #L[i][0] is sname, L[i][1] is the data. Note: L should be length == 1
+            if not L[i][0] in exclude: # if the sample is not in the exclusive list.
                 for c in L[i][1]:
                     if Q[t].has_key(c):
                         if L[i][1][c].has_key(t):
@@ -396,15 +405,20 @@ def partition_sample(S,B):
     
 #apply bin partitions to the sliced samples
 #allow caller keys to be filtered out here with exclude=[k1,k2,...]
+# Q[t][c]{sample_name: [ele1, ele2,...,eleN]}
+# ele spec: [ref_begin, ref_end, [[0, 0]], 1.0, 1.0, {caller_ID: set([series_ID_in_VCF])}]
+# B is the length range of each type.
+# Return: P[t][b]{caller:{sample_name:[ele1, ele2,...,eleN]}}, b is bin size (variation size)
 def partition_sliced_samples(Q,B,exclude=[]):
     P,N = {},{}
     for t in Q:
         P[t] = {}
-        C = set(Q[t].keys()).difference(set(exclude))
+        C = set(Q[t].keys()).difference(set(exclude)) # Remove the caller in exclusive list.
         for c in C:
-            for s in Q[t][c]:
+            for s in Q[t][c]: # s is the sample name.
+                # N[b][ele1, ele2,...,eleN]: b is bin size (variation size)
                 N = fu.partition_by_mag(Q[t][c][s],B[t]) #this will need to be distributed
-                for i in range(len(B[t])-1):
+                for i in range(len(B[t])-1): # i is the index of bin size.
                     if P[t].has_key(i):
                         if P[t][i].has_key(c): P[t][i][c][s] = N[i]
                         else:                  P[t][i][c] = {s:N[i]}

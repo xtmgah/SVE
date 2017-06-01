@@ -123,13 +123,20 @@ def collect_results(result):
 #[1] File Partitioning------------------------------------------------------------------  
 #read and convert to SVULTB                                     all SV caller VCF inputs
 #saving each partition to a seperate pickle file               || by sample << partition
+#Note: the function is called sample by sample
 def partition_call_sets(sample,k,O,R,B,chroms,flt,flt_exclude,caller_exclude):
     sname = sample[sample.rfind('/')+1:]                      #extract sample identifier
     print('reading sample %s'%sname)
     sname_partition_path = out_dir+'/svul/'+sname                            #build path
+    # S[c][t][ele1, ele2,...,eleN]: c: caller and t: type
+    # ele spec: [ref_begin, ref_end, [[0, 0]], 1.0, 1.0, {caller_ID: set([series_ID_in_VCF])}]
+    # example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
     S,V = su.vcf_glob_to_svultd(sample+'/*vcf',chroms,O,flt=flt,flt_exclude=flt_exclude)
-    S = su.filter_call_sets2(S,R,exclude=flt_exclude)                    #filter svmasks
+    #i this step will filter calls in S if positions overlap with svmasks
+    S = su.filter_call_sets2(S,R,exclude=flt_exclude)                                  
+    # Q[t][c]{sample_name: [ele1, ele2,...,eleN]}
     Q = fusor.slice_samples([[sname,S]])                                         #legacy
+    # P[t][b]{caller:{sample_name:[ele1, ele2,...,eleN]}}, b is bin size (variation size)
     P = fusor.partition_sliced_samples(Q,B,exclude=caller_exclude)            #partition
     success = fusor.write_partitions_by_sample(sname_partition_path,P)    #write to disk
     return [sname,success]                                   #report back to async queue

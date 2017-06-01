@@ -1113,15 +1113,18 @@ def filter_call_sets(S,R,exclude=[]):
         T[k] = N
     return T
 
+
+# S[c][t][[]...[]]
+# c: caller; t: type
 def filter_call_sets2(S,R,exclude=[]):
     T = {}
     types = set([i for l in [S[k].keys() for k in S] for i in l])
-    for k in S:
+    for k in S:  # k is the index of caller.
         N = {}
         for t in types:
             if S[k].has_key(t):
-                if k in exclude: N[t] = S[k][t]
-                else:            N[t] = filter_regions2(S[k][t],R)
+                if k in exclude: N[t] = S[k][t] # if exclude, they should be filtered by the previous step, construct_svult.
+                else: N[t] = filter_regions2(S[k][t],R)
         T[k] = N
     return T
 

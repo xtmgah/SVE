@@ -438,6 +438,7 @@ cdef unsigned int get_y_mag(list y):
 cdef unsigned int get_xy_mag(list c):
     cdef unsigned int i,t,x,y
     t,y,x = 0,0,0
+    # c[0] and c[1] are reference begin and end. 
     x = <unsigned int>(abs(<long>c[1]-<long>c[0]+1))
 #    try:
 #        x = <unsigned int>(abs(<long>c[1]-<long>c[0]+1))
@@ -467,6 +468,9 @@ cdef unsigned int get_mag(list C):
 
 @cython.boundscheck(False)
 @cython.nonecheck(False) 
+# C: [ele1, ele2,...,eleN]
+# ele spec: [ref_begin, ref_end, [[0, 0]], 1.0, 1.0, {caller_ID: set([series_ID_in_VCF])}]
+# Return: P[j][ele1, ele2,...,eleN]: j is bin size (variation size)
 def partition_by_mag(list C, list B, bint self_merge=False, bint interpolate=False):
     cdef unsigned int i,j,n,b
     cdef double v,w_a,w_b
@@ -493,7 +497,7 @@ def partition_by_mag(list C, list B, bint self_merge=False, bint interpolate=Fal
         for i in range(len(C)):
             n = get_xy_mag(C[i])
             for j in range(b-1):
-                if n >= B[j] and n < B[j+1]:
+                if n >= B[j] and n < B[j+1]: # the size of variation is between B[j] and B[j+1]
                     P[j] += [C[i]]
     return P
     
