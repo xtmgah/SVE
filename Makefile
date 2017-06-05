@@ -34,9 +34,10 @@ all: unzip_tarballs perl-lib htslib bwa_samtools speedseq bcftools bedtools2 del
 	@cp $(SVE_DIR)/scripts/$(PROGRAM).py $(SVE_DIR)/$(TARGET_BIN)/$(PROGRAM)
 .PHONY: all
 
-FusorSV: $(FUSORSV_DIR)/FusorSV.py $(FUSORSV_DIR)/fusion_utils.c
+FusorSV:
 	#$(PYTHON) $(FUSORSV_DIR)FusorSV.py build
-	$(CC) -rdynamic $(FUSORSV_DIR)/fusion_utils.c -shared -o $(FUSORSV_DIR)/fusion_utils.so -fPIC $(CFLAGS_FUSOR_SV) $(LDFLAGS)
+	@cd $(FUSORSV_DIR) && $(PYTHON) fusion_utils.py build_ext --inplace
+	#$(CC) -rdynamic $(FUSORSV_DIR)/fusion_utils.c -shared -o $(FUSORSV_DIR)/fusion_utils.so -fPIC $(CFLAGS_FUSOR_SV) $(LDFLAGS)
 	@cd $(FUSORSV_DIR) && tar -zxvf data.tar.gz
 
 unzip_tarballs:
