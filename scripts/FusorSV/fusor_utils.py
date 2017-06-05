@@ -33,7 +33,7 @@ def write_partitions_by_sample(sname_partition_path,P):
             for c in P[t][b]:
                 for s in P[t][b][c]: # TODO: We should single sample so no need to use for loop.
                     path = sname_partition_path+'_S%s_T%s_B%s.pickle'%(c,t,b)
-                    # P[t][b][c][s] is [ele1, ele2,...,eleN]
+                    # P[t][b][c][s] = [ele1, ele2,...,eleN]
                     # ele spec: [ref_begin, ref_end, [[0, 0]], 1.0, 1.0, {caller_ID: set([series_ID_in_VCF])}]
                     # example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
                     S = {t:{b:{c:{s:P[t][b][c][s]}}}}
@@ -42,15 +42,19 @@ def write_partitions_by_sample(sname_partition_path,P):
     return True
 
 #for a partition of type and bin, pool all samples and all callers
+# Return: P[t][b]{caller:{sample_name:[ele1, ele2,...,eleN]}}, b is bin size (variation size)
 def read_partitions_by_caller(partition_path,callers,exclude,t,b,verbose=False):
     P = {t:{b:{c:{} for c in callers}}}
     for c in set(callers).difference(set(exclude)):
+        # pile up all samples in partition_path
         samples = glob.glob(partition_path+'*_S%s_T%s_B%s.pickle'%(c,t,b)) #keys are in the pickler
         for sample in samples:
             with open(sample, 'rb') as f:
                 start = time.time()
                 if verbose: print('reading %s'%sample)
+                # file format: S[t][b][c][s] = [ele1, ele2,...,eleN]
                 S = pickle.load(f)
+                # s: sample_name. We should get a single sample name for each file.
                 s = S[t][b][c].keys()[0]
                 stop = time.time()
                 if verbose: print('finished loading %s in %s sec'%(sample,round(stop-start,2)))
@@ -474,19 +478,25 @@ def unpartition_sliced_samples(P):
     return Q
         
 #for each sample get pairwise feature magnitudes and pool together
-#P[t][b][c][s] => M[t][b][(i,j)][|I|,|U|,|D1|,|D2|]
+# P[t][b][c][s] => M[t][b][(i,j)][|I|,|U|,|D1|,|D2|]
+# Return: The sizes of I (intersection), U(Union), D1 (distance of C1) and D2 (distance of C2)
+# P[t][b]{caller:{sample_name1:[ele1, ele2,...,eleN]},sample_name2:[ele1, ele2,...,eleN]}}, b is bin size (variation size)
+# example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
 def all_samples_all_pairs_magnitudes(P,snames,self_merge=True):
     M,N,F = {},[],[]
     for t in P:
         M[t] = {}
         for b in P[t]:
             M[t][b] = {}
-            for i,j in sorted(it.combinations(P[t][b].keys(),2)):
+            for i,j in sorted(it.combinations(P[t][b].keys(),2)): # Get all combinations of pair of callers
                 N = [np.uint64(0),np.uint64(0),np.uint64(0),np.uint64(0)] #initial
                 for s in snames:
-                    C1,C2 = [],[]
+                    C1,C2 = [],[] # list of ele
                     if P[t][b][i].has_key(s): C1 = P[t][b][i][s]
                     if P[t][b][j].has_key(s): C2 = P[t][b][j][s]                   
+                    # Test example
+                    #C1 = [[1584545, 1588465, 1, [[0, 0]], 1.0, 1.0, {i: set([1])}], [1588265, 1588565, 1, [[0, 0]], 1.0, 1.0, {i: set([2])}], [1588365, 1588765, 1, [[0, 0]], 1.0, 1.0, {i: set([3])}], [6802620, 6804160, 1, [[0, 0]], 1.0, 1.0, {i: set([4])}]]
+                    #C2 = [[1584545, 1588465, 1, [[0, 0]], 1.0, 1.0, {j: set([1])}], [6802620, 6804160, 1, [[0, 0]], 1.0, 1.0, {j: set([2])}]]
                     F = fu.feature_magnitudes(C1,C2,self_merge)
                     N[0] += np.uint64(F[0])
                     N[1] += np.uint64(F[1])
@@ -734,6 +744,9 @@ def smooth_brkpt_samples(F,K,P,exclude=[1],IDX=6):
     return S
 
 #uses the M[t][b][(i,j)][|I|,|U|,|D1|,|D2|]
+# M[t][b][(i,j)][|I|,|U|,|D1|,|D2|]
+# (i,j): (caller_i, caller_j)
+# The sizes of I (intersection), U(Union), D1 (distance of C1) and D2 (distance of C2)
 def pooled_distance(M,mode='j'):
     D,NN = {},{}
     for t in M:
@@ -742,8 +755,9 @@ def pooled_distance(M,mode='j'):
             D[t][b],NN[t][b] = {},{}
             #get the combintaion distances
             for g in M[t][b]:
+                # distance of two callers
                 D[t][b][g] = np.float128(1.0)  #default is the  max distance
-                if mode=='j' and np.float128(M[t][b][g][1]) > 0.0:
+                if mode=='j' and np.float128(M[t][b][g][1]) > 0.0: # |U| > 0.0
                     #1-(|I|/|U|)
                     D[t][b][g] = np.float128(1.0)-np.float128(M[t][b][g][0])/np.float128(M[t][b][g][1])
                 if mode=='u' and np.float128(M[t][b][g][1]) > 0.0 and np.float128(M[t][b][g][2]) > 0.0:
@@ -751,17 +765,21 @@ def pooled_distance(M,mode='j'):
                     j = np.float128(M[t][b][g][0])/np.float128(M[t][b][g][1])
                     u = np.float128(M[t][b][g][2])/(np.float128(M[t][b][g][2])+np.float128(M[t][b][g][3]))
                     D[t][b][g] = np.float128(1.0)-np.float128(2.0)*(j*u)/(j+u)
-            K = sorted(list(set([v for w in M[t][b] for v in w])))        
+            K = sorted(list(set([v for w in M[t][b] for v in w]))) # K is the list of all caller IDs.
             for k in K:
                 N = []
                 for i,j in sorted(M[t][b].keys()): #distance then key
                     if k==i: N += [[D[t][b][(i,j)],j]]
                     if k==j: N += [[D[t][b][(i,j)],i]]
-                NN[t][b][k] = sorted(N,key=lambda x: x[0])
+                # NN[t][b][k] = [[dis_k_i, caller_i], [dis_k_j, caller_j],...,[dis_k_n, caller_n]]; k is a caller ID.
+                NN[t][b][k] = sorted(N,key=lambda x: x[0]) # sorted by distance
     return D,NN
 
 #given prior and new data smooth based on the magnitude
 #of observations for the features for each pair
+# J[t][b][(i,j)][|I|,|U|,|D1|,|D2|]
+# (i,j): (caller_i, caller_j)
+# The sizes of I (intersection), U(Union), D1 (distance of C1) and D2 (distance of C2)
 def additive_magnitude_smoothing(J,J_new,k=None):
     A = {}
     for t in J:
@@ -905,6 +923,7 @@ def sum_pairs(P):
                 S[t][b] += [np.sum(row)/np.float128(len(row)-1)]
     return S
 
+#e: [(id1,id2,...)] = weight
 def exp_hist(e):
     h = {}
     for g in e:
@@ -914,12 +933,19 @@ def exp_hist(e):
     
 def exp_stats(e,e_post,a):
     if a < np.float128(1.0):
-        H,H_post = exp_hist(e),exp_hist(e_post)
+        # H: {(weight1,weight2,...), len_of_caller]
+        H,H_post = exp_hist(e),exp_hist(e_post) 
         upper,lower,value = 0,0,np.float128(1.0)
         for row in H:
+            #print "row in H"
+            #print row[0]
+            #print row[1]
             if row[0] >= a: upper += int(row[1])
         for row in H_post:
             lower += int(row[1])
+            #print "row in H_post"
+            #print row[0]
+            #print row[1]
             if lower >= upper:
                 value = row[0]
                 break
@@ -932,6 +958,7 @@ def exp_stats(e,e_post,a):
 #given the old group expectation E and cutoff t,b value alpha
 #estimates a alpha_post value that uses the histogram of the
 #posterior estimate E_post to adjust the alpha value
+# E[t][b][(id1,id2,...)] = weight
 def post_filter_cutoff(E,E_post,alpha):
     alpha_post = {}
     for t in E:
@@ -942,26 +969,43 @@ def post_filter_cutoff(E,E_post,alpha):
                     
 #given the target T and Group G with distance calculation D and Nearest Neibors NN
 #compute the weight of the group which is its expected value given a pileup
+# g is the combination of all callers.
+# D[t][b][(i,j)]: distance between callers i and j. The ditance is 1-(|I|/|U|).
+# NN[t][b][k] = [[dis_k_i, caller_i], [dis_k_j, caller_j],...,[dis_k_n, caller_n]]; k is a caller ID.
 def group_weight(g,k,D,NN,t,b):
     L,Q,w = [],[],np.float128(0.0)
+
+    for i in range(0, len(g) - 1):
+        for j in range(i + 1, len(g)):
+            if D[t][b].has_key((g[i],g[j])): L += [np.float128(1.0)-D[t][b][(g[i],g[j])]]
+    return np.float128(1.0)-np.float128(np.prod(L))
+
+    """
     if NN[t][b].has_key(k):
         for i in NN[t][b][k]: #sort the group G
-            if i[1] in g: Q += [i[1]]
+            if i[1] in g: Q += [i[1]] # i[1] is the group ID.
+        # Q is the list of caller IDs associated with caller k.
         for i in range(len(Q)):
             c,j,n = np.float128(1.0),0,len(NN[t][b][Q[i]])
             while j<n and NN[t][b][Q[i]][j][1] == k: j+=1
             if i > 0: c = NN[t][b][Q[i]][j][0]        
             L += [np.float128(1.0)-(np.float128(1.0)-D[t][b][(k,Q[i])])*c]
         w = np.float128(1.0)-np.float128(np.prod(L))
+    """
     return w
 
 
 #for all types and bins precompute all group weights
 #M is the all pair all sample magnitudes (expected distance matrix input)
 #k is the target key to use to calculate optimal groups in M[t][b] on
+# M[t][b][(i,j)][|I|,|U|,|D1|,|D2|]
+# (i,j): (caller_i, caller_j)
+# The sizes of I (intersection), U(Union), D1 (distance of C1) and D2 (distance of C2)
 def all_group_weights(M,k,mode='j'):
     W = {}      
-    D,NN = pooled_distance(M,mode)
+    # D[t][b][(i,j)]: distance between callers i and j. The ditance is 1-(|I|/|U|).
+    # NN[t][b][k] = [[dis_k_i, caller_i], [dis_k_j, caller_j],...,[dis_k_n, caller_n]]; k is a caller ID.
+    D,NN = pooled_distance(M,mode) # TODO: why do we calculate again?
     for t in M:
         W[t] = {}
         for b in M[t]:
@@ -969,13 +1013,15 @@ def all_group_weights(M,k,mode='j'):
             C =  set([v for w in M[t][b] for v in w]).difference(set([k]))
             for i in range(1,len(C)+1): #generate combinations
                 for g in [tuple(sorted(x,reverse=False)) for x in it.combinations(C,i)]:
-                    W[t][b][g] = group_weight(g,k,D,NN,t,b)
+                    #W[t][b][g] = group_weight(g,k,D,NN,t,b) #TODO: Should k be replaced by i?
+                    W[t][b][g] = group_weight(g,g[0],D,NN,t,b)
     return W
 #::::::::: optimal group selection ::::::::::::::::::::::::::::x
 
 #given the type and bin, select an optimal group for pileup
 #:::TO DO:::with each i in g: (i,)>alpha and CU{i}>C+alpha/2
 #don't have to worry about the target key here as it has been applied
+# W[t][b][(id1,id2,...)] = weight
 def select_groups(W,gamma=0.0):
     G = {}
     for t in W:
@@ -983,14 +1029,18 @@ def select_groups(W,gamma=0.0):
         for b in W[t]:
             C,G[t][b] = [],{}
             for g in W[t][b]:
+                if W[t][b][g]>=gamma: G[t][b][g] = W[t][b][g]
+            """
+            for g in W[t][b]:
                 if len(g)<=1 and W[t][b][g]>=gamma: C += [g[0]]
-            if len(C)<=0:
+            if len(C)<=0: # we couldn't find any combination for [t][b]
                 G[t][b] = {(None,):np.float128(0.0)}
             else:
                 C = sorted(C)
                 for i in range(1,len(C)+1):
                     for j in it.combinations(C,i):
                         G[t][b][j] = W[t][b][j]
+            """
     return G
                 
 #pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp  
@@ -1262,6 +1312,7 @@ def apply_weight_graph(X,G,c_i,i_c,EW,average=0):
 #need to check average behavior...
 #given the partition P[t][b][c][s]
 #this will work without the key k 
+# E[t][b][(id1,id2,...)] = weight
 def pileup_group_by_sample(P,E,true_key=(0,),average=0):
     A = {}
     for t in P:
@@ -1670,6 +1721,7 @@ def score_sample(S,k,F,self_merge=True):
     return T
 
 #temperary helper function for viewing
+# Q[t][c]{sample_name: [ele1, ele2,...,eleN]}
 def pretty_stats(Q,types,t,k,c_id,sname,r=0.5,verbose=True):
     C1,C2 = [],[]
     if Q[t].has_key(k) and Q[t][k].has_key(sname):       C1 = Q[t][k][sname]

@@ -161,7 +161,10 @@ def log1p_feature_magnitudes(list C1, list C2, bint self_merge=False):
     return [f1,f2,f3,f4]
 
 @cython.boundscheck(False)
-@cython.nonecheck(False) 
+@cython.nonecheck(False)
+# Given the lists from two different callers
+# Return [I,U,D1,D2]
+# Return the sizes of I (intersection), U(Union), D1 (distance of C1) and D2 (distance of C2)
 def feature_magnitudes(list C1, list C2, bint self_merge=False):
     cdef long i
     cdef double f1,f2,f3,f4
@@ -657,15 +660,19 @@ def bp_analysis(dict S,dict V,int k=3,bint unique=True,stat='outer'):
 @cython.nonecheck(False)
 ################################################################################
 #given a svul, join idxs from list j
+# C is a list of ele
+# example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
+# j: range (i,j)
 cdef dict join_idx(list C,list j,long p):
     cdef long i,k,c
     cdef dict A,idx
     A = {}
     for idx in [C[i][p] for i in j]: #hard coded idx=6
-        for k in idx:
-            for c in idx[k]:
+        for k in idx: # idx: {17: set([34276])}
+            for c in idx[k]: # c is the caller id
                 if A.has_key(k): A[k].add(c)
                 else:            A[k] =  {c}        
+    # After join, set may become {17: set([34276, 34278, 35000])} for example
     return A
 
 @cython.boundscheck(False)
@@ -689,32 +696,36 @@ cdef dict merge_idx(dict idx1, dict idx2):
 @cython.nonecheck(False)
 #given a svul, join the y ranges from list j
 #if they overlap, otherwise leave them alone
+# C is a list of ele
+# example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
+# x: range (i,j)
 cdef list join_y(list C,list x,long p):
     cdef long i,j,n,b
     cdef list A,B,F,R,k
     A,B,F,R = [],[],[],[]
     for i in x: #partition forward and reverse
-        for k in C[i][p]: #hard coded y=3
+        for k in C[i][p]: #hard coded p=3
             if k[0]>k[1]: R += [[k[1],k[0]]] #------>REV
             else:         F += [[k[0],k[1]]]
     #forward partitions
     F = sorted(F)
     n = len(F)
     if n > 0:
-        i = 0
+        i = 0 # i is the index of F
         while i < n-1:
             j = i+1
-            b = F[i][1]
-            while b+1 >= F[j][0] and j < n-1:
-               if b < F[j][1]: b = F[j][1]
+            b = F[i][1] # end point
+            while b+1 >= F[j][0] and j < n-1:  # overlap
+               if b < F[j][1]: b = F[j][1] # F[i] doesn't totally cover F[j] so we update b
                j += 1
             A += [[F[i][0],b]]
             i = j
         if len(A) > 0 and A[-1][1]+1 >= F[i][0]:
-            if A[-1][1] < F[i][1]:
+            if A[-1][1] < F[i][1]: # F[i] totally covers.
                 A[-1][1] = F[i][1]
         else:
             A += [[F[i][0],F[i][1]]]
+
     #reverse partitions
     R = sorted(R)
     n = len(R)
@@ -733,6 +744,7 @@ cdef list join_y(list C,list x,long p):
                 B[-1][1] = R[i][1]
         else:
             B += [[R[i][0],R[i][1]]]
+    
     return A+[[B[i][1],B[i][0]] for i in range(len(B))]       #----->REV
 
 @cython.boundscheck(False)
@@ -791,12 +803,16 @@ cdef list merge_y(list Y1,list Y2):
 @cython.nonecheck(False)
 @cython.wraparound(False)
 #join via method:{min,max,mu,f1}
+# C is a list of ele
+# example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
+# x: range (i,j)
 def join_wx(list C,list x,long p):
+    # p is hard coded = 4
     cdef long i    
     cdef double w
     cdef list M
-    if len(x)>1:
-        M = [np.abs(<double>C[i][1]-<double>C[i][0])+1.0 for i in x]
+    if len(x)>1: # the region has multiple eles.
+        M = [np.abs(<double>C[i][1]-<double>C[i][0])+1.0 for i in x]  # size of the variation
         w = np.sum([M[i]*C[i][p] for i in range(len(M))])/np.sum(M)
     else:
         w = C[x[0]][p]
@@ -806,12 +822,16 @@ def join_wx(list C,list x,long p):
 @cython.nonecheck(False)
 @cython.wraparound(False)
 #join via method:{min,max,mu,f1}
+# C is a list of ele
+# example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
+# x: range (i,j)
 def join_wy(list C,list x,long p):
+    # p is hard coded = 5
     cdef long i    
     cdef double w
     cdef list M
     if len(x)>1:
-        M = [np.abs(<double>C[i][1]-<double>C[i][0])+1.0 for i in x]
+        M = [np.abs(<double>C[i][1]-<double>C[i][0])+1.0 for i in x]  # size of the variation
         w = np.sum([M[i]*C[i][p] for i in range(len(M))])/np.sum(M)
     else:
         w = C[x[0]][p]
@@ -823,19 +843,21 @@ def join_wy(list C,list x,long p):
 #need to update for y lists y1[3]-y2[4]
 #C[i][4] is the wx which is averaged during a merge step
 #C[i][5] is the wy which is averaged during a merge step
+# C is a list of ele
+# example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
 def merge_regions(list C,check_x=True,check_y=True):
     cdef long i,j,b,n
     cdef list M = []
     n = len(C)
     if n > 0:
         i,W = 0,[]
-        while i < n-1:
+        while i < n-1: # i is the index of C
             j = i+1
-            b = C[i][1]
-            while b+1 >= C[j][0] and j < n-1:
-                if b < C[j][1]: b = C[j][1]
+            b = C[i][1] # reference end
+            while b+1 >= C[j][0] and j < n-1: # C[i] and C[j] overlap.
+                if b < C[j][1]: b = C[j][1] # C[i] does not totally cover C[j] so we update b (reference end)
                 j += 1
-            M += [[C[i][0],b,C[i][2],
+            M += [[C[i][0],b,C[i][2],         #[0] reference_begin, [1] merged reference_end, [2] type
                    join_y(C,range(i,j),3),    #[3] will be y=[[y1,y2]]
                    join_wx(C,range(i,j),4),   #[4] will be wx
                    join_wy(C,range(i,j),5),   #[5] will be wy
@@ -1081,7 +1103,7 @@ cdef void orientation_6(list C1,long j1,list C2,long j2,
 cdef void orientation_7(list C1,long j1,list C2,long j2,
                         list I,list U,list D1,list D2):
     #[i]----------------------[i]
-    if I[-1][1]+1 >= C1[j1][0]:
+    if I[-1][1]+1 >= C1[j1][0]: # the last ele in I overlaps with C1[j1]
         I[-1][1] = C1[j1][1]
         I[-1][3] = merge_y(I[-1][3],merge_y(C1[j1][3],C2[j2][3]))
         I[-1][6] = merge_idx(I[-1][6],merge_idx(C1[j1][6],C2[j2][6]))
@@ -1106,6 +1128,9 @@ cdef void orientation_7(list C1,long j1,list C2,long j2,
 
 @cython.boundscheck(False)
 @cython.nonecheck(False)
+# C is a list of ele
+# example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
+# x: range (i,j)
 def LR(list C1,list C2):
     cdef long a,b,c,d,j1,j2,n1,n2
     cdef list I,U,D1,D2
@@ -1114,7 +1139,7 @@ def LR(list C1,list C2):
     I,U,  = [[-2,-2,0,[],0,0,{}]],[[-2,-2,0,[],0,0,{}]]
     D1,D2 = [[-2,-2,0,[],0,0,{}]],[[-2,-2,0,[],0,0,{}]]
     if n1 > 1 and n2 > 1:
-        upper = max(C1[-1][1],C2[-1][1])
+        upper = max(C1[-1][1],C2[-1][1]) # the max reference end
         C1 += [[upper+2,upper+2,0,[],0,0,{}],[upper+4,upper+4,0,[],0,0,{}]] #pad out the end of C1
         C2 += [[upper+2,upper+2,0,[],0,0,{}],[upper+4,upper+4,0,[],0,0,{}]] #pad out the end of C2
         while j1+j2 < n1+n2:  #pivioting dual ordinal indecies scan left to right on C1, C2
@@ -1180,7 +1205,7 @@ cdef void orientation_1_no_idx(list C1,long j1,list C2,long j2,
                C1[j1][4],C1[j1][5],C1[j1][6]]]
     #[d1]--------------------[d1]
     if D1[-1][1]+1 >= C1[j1][0]:  #extend segment
-        if D1[-1][1]+1!=C2[j2-1][0]:
+        if D1[-1][1]+1!=C2[j2-1][0]: # Not adjacent perfectly. TODO: why don't we care when they equal?
             D1[-1][1] = C1[j1][1]
             D1[-1][3] = merge_y(D1[-1][3],C1[j1][3])
     else:                         #new segment                        
@@ -1217,7 +1242,7 @@ cdef void orientation_2_no_idx(list C1,long j1,list C2,long j2,
         if D1[-1][1] > C2[j2][0]-1:
             D1[-1][1] = C2[j2][0]-1
             if D1[-1][1] < D1[-1][0]: D1.pop()
-    else:
+    else: # new segment
         D1 += [[C1[j1][0],C2[j2][0]-1,C1[j1][2],C1[j1][3],
                 C1[j1][4],C1[j1][5],C1[j1][6]]]            
     #[d2]--------------------[d2] 

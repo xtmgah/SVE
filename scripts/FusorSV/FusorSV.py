@@ -183,12 +183,22 @@ def post_model_partition(apply_fusion_model_path,snames,t,b,k,callers,caller_exc
     #[1] load prior model values----------------------------------------
     B,J,D,E,alpha,n,K = fusor.import_fusion_model(apply_fusion_model_path)      #import the existing model
     #[2] load new input data partitions
+    # P[t][b]{caller:{sample_name:[ele1, ele2,...,eleN]}}, b is bin size (variation size)
+    # example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
     P = fusor.read_partitions_by_caller(out_dir+'/svul/',callers,caller_exclude,t,b,False)   #all samples
+    # J_new[t][b][(i,j)][|I|,|U|,|D1|,|D2|]
+    # (i,j): (caller_i, caller_j)
+    # The sizes of I (intersection), U(Union), D1 (distance of C1) and D2 (distance of C2)
     J_new = fusor.all_samples_all_pairs_magnitudes(P,snames)                 #pool all feature magnitudes
     #[3] construct the posterior estimator using:        the prior data, new data and imputed true row==k
     J_post = fusor.additive_magnitude_smoothing(J,J_new,k)        #k is used to swap a row J_prime into J
+    # D_post[t][b][(i,j)]: distance between callers i and j. The ditance is 1-(|I|/|U|).
+    # NN[t][b][k] = [[dis_k_i, caller_i], [dis_k_j, caller_j],...,[dis_k_n, caller_n]]; k is a caller ID.
+    #    dis_i_j is sorted.
     D_post,NN_post = fusor.pooled_distance(J_post)                      #get the new data distance matrix
+    # W[t][b][(id1,id2,...)] = weight
     W_post = fusor.all_group_weights(J_post,k,mode='j')  #calculate the pooled D,NN and all group weights
+    # E[t][b][(id1,id2,...)] = weight
     E_post = fusor.select_groups(W_post,min_g)                         #gamma is a group selection cutoff 
     alpha_post = fusor.post_filter_cutoff(E,E_post,alpha)                       #updated filter estimates
     stop = time.time()
@@ -231,6 +241,7 @@ def apply_model_to_samples(sample,ref_path,chroms,types,bins,callers,O,
         B,J_post,D_post,E_post,alpha_post,n_post,K = fusor.import_fusion_model(model_path) #import new data
         P = fusor.read_partitions_by_sample(partition_path,sname)            #read all partitions for sname
         Q = fusor.unpartition_sliced_samples(P)                              #unpartition for merging later
+        # E[t][b][(id1,id2,...)] = weight
         A = fusor.pileup_group_by_sample(P,E,(k,))                    #projection of all calls for a sample                    
         F = fusor.filter_pileup_by_sample(A,alpha,E_post,leave_in=False)         #filter cutoff in the mode
         if smoothing:
@@ -240,6 +251,7 @@ def apply_model_to_samples(sample,ref_path,chroms,types,bins,callers,O,
         fusor.merge_filtered_samples(Q,F,f_id,snames,[],over_m)      #expectation priorty merge back result
     #[2] do some scoring and write out the sample results, returning for global performance----------------
     start = time.time()
+    # Q[t][c]{sample_name: [ele1, ele2,...,eleN]}
     for t in Q:                                  #give the metrics for each sample and write out the result
         for c in set(cross_fold_stats).difference(set([f_id,k])):
             if verbose: print('%s%s'%(callers[c],''.join(['-' for i in range(80)])))   #other callers first
@@ -326,7 +338,8 @@ if __name__ == '__main__':
     B[2] = [1,50,100, 400, 600, 950, 1250, 1550, 1950, 2250, 2950, 3650, 4800, 6150, 9000, 18500, 100000, 10000000]
     B[3] = [1,50,500,1000,5000,10000,50000,250000,10000000]
     B[5] = [1,50,100,250,500,1000,2500, 3500, 45000, 80000, 115000, 180000, 260000, 300000, 500000, 1000000]
-    types = {0:'SUB',1:'INS',2:'DEL',3:'DUP',4:'CNV',5:'INV',6:'TRA',7:'BND'}
+    #types = {0:'SUB',1:'INS',2:'DEL',3:'DUP',4:'CNV',5:'INV',6:'TRA',7:'BND'}
+    types = {3:'DUP'}
     bins  = {t:su.pretty_ranges(B[t],'') for t in B}
     partition_path = out_dir+'/svul/'
     total_partitions = len(glob.glob(partition_path+'*.pickle'))
