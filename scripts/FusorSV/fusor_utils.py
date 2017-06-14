@@ -71,6 +71,7 @@ def assemble_partition(L,t,b,exclude=[]):
     return P
 
 #get one sample worth of data AKA all partitions
+# P{type:{bin:{caller:{sample_name:[svult, svult,...,svult]}}}}
 def read_partitions_by_sample(partition_path,sname):
     sample_data = glob.glob(partition_path+'/%s*.pickle'%sname)
     Q = {}
@@ -223,8 +224,10 @@ def filter_samples2(Q,R,ids=[-1]):
 #new pooled optimal group selection
 #slice out the samples for a [[svult_1,sname_1],[svult_2,sname_2],...[svult_s,snmae_s]]
 # L: [sample_name, S]
-# S[c][t][ele1, ele2,...,eleN]: c: caller and t: type
-# Return: Q[t][c]{sample_name: [ele1, ele2,...,eleN]}
+# S{caller:{type:[svult,svult,...]}} c: caller and t: type
+# svult spec: [ref_begin, ref_end, [[0, 0]], 1.0, 1.0, {caller_ID: set([series_ID_in_VCF])}]
+# example svult: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
+# Return: Q{type:{caller:{sample_name:[svult,svult,...]}}}
 def slice_samples(L,exclude=[]):
     #do empty for types here for downstream binning
     all_types = set([])
@@ -409,10 +412,10 @@ def partition_sample(S,B):
     
 #apply bin partitions to the sliced samples
 #allow caller keys to be filtered out here with exclude=[k1,k2,...]
-# Q[t][c]{sample_name: [ele1, ele2,...,eleN]}
-# ele spec: [ref_begin, ref_end, [[0, 0]], 1.0, 1.0, {caller_ID: set([series_ID_in_VCF])}]
+# Q{type:{caller:{sample_name:[svult,svult,...]}}}
+# svult spec: [ref_begin, ref_end, [[0, 0]], 1.0, 1.0, {caller_ID: set([series_ID_in_VCF])}]
 # B is the length range of each type.
-# Return: P[t][b]{caller:{sample_name:[ele1, ele2,...,eleN]}}, b is bin size (variation size)
+# Return: P{type:{bin:{caller{sample_name:[svult,svult,...]}}}}, bin: variant size.
 def partition_sliced_samples(Q,B,exclude=[]):
     P,N = {},{}
     for t in Q:
@@ -422,12 +425,12 @@ def partition_sliced_samples(Q,B,exclude=[]):
             for s in Q[t][c]: # s is the sample name.
                 # N[b][ele1, ele2,...,eleN]: b is bin size (variation size)
                 N = fu.partition_by_mag(Q[t][c][s],B[t]) #this will need to be distributed
-                for i in range(len(B[t])-1): # i is the index of bin size.
-                    if P[t].has_key(i):
-                        if P[t][i].has_key(c): P[t][i][c][s] = N[i]
-                        else:                  P[t][i][c] = {s:N[i]}
+                for b in range(len(B[t])-1): # i is the index of bin size.
+                    if P[t].has_key(b):
+                        if P[t][b].has_key(c): P[t][b][c][s] = N[b]
+                        else:                  P[t][b][c] = {s:N[b]}
                     else:
-                        P[t][i] = {c:{s:N[i]}}
+                        P[t][b] = {c:{s:N[b]}}
     return P
 
 #def partition_by_mag(C,B,self_merge=False,interpolate=False):
@@ -458,6 +461,8 @@ def partition_sliced_samples(Q,B,exclude=[]):
 #    return P
     
 #agregate all the bins back together again for Q in OOC|| version
+# P{type:{bin{caller:{sample:[ele1, ele2,...,eleN]}}}}, b is bin size (variation size)
+# Return: Q{type:{caller:{sample:[[ele1, ele2,...,eleN]]}}}
 def unpartition_sliced_samples(P):     
     Q = {}
     for t in P:
@@ -466,7 +471,7 @@ def unpartition_sliced_samples(P):
             for c in P[t][b]:
                 if not Q[t].has_key(c):
                     Q[t][c] = {}
-                for s in P[t][b][c]:
+                for s in P[t][b][c]: # we should have a single sample here.
                     if not Q[t][c].has_key(s):
                         Q[t][c][s] = copy.deepcopy(P[t][b][c][s])
                     else:
@@ -479,9 +484,11 @@ def unpartition_sliced_samples(P):
         
 #for each sample get pairwise feature magnitudes and pool together
 # P[t][b][c][s] => M[t][b][(i,j)][|I|,|U|,|D1|,|D2|]
+# P{type:{bin:{caller:{sample_name:[svult, svult,...,svult]}}}}
+# example svult: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
 # Return: The sizes of I (intersection), U(Union), D1 (distance of C1) and D2 (distance of C2)
-# P[t][b]{caller:{sample_name1:[ele1, ele2,...,eleN]},sample_name2:[ele1, ele2,...,eleN]}}, b is bin size (variation size)
-# example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
+# Return: M{type:{bin:{(i,j):[|I|,|U|,|D1|,|D2|]}}}
+#         The sizes of I (intersection), U(Union), D1 (distance of C1) and D2 (distance of C2)
 def all_samples_all_pairs_magnitudes(P,snames,self_merge=True):
     M,N,F = {},[],[]
     for t in P:
@@ -491,7 +498,7 @@ def all_samples_all_pairs_magnitudes(P,snames,self_merge=True):
             for i,j in sorted(it.combinations(P[t][b].keys(),2)): # Get all combinations of pair of callers
                 N = [np.uint64(0),np.uint64(0),np.uint64(0),np.uint64(0)] #initial
                 for s in snames:
-                    C1,C2 = [],[] # list of ele
+                    C1,C2 = [],[] # list of svult
                     if P[t][b][i].has_key(s): C1 = P[t][b][i][s]
                     if P[t][b][j].has_key(s): C2 = P[t][b][j][s]                   
                     # Test example
@@ -744,9 +751,10 @@ def smooth_brkpt_samples(F,K,P,exclude=[1],IDX=6):
     return S
 
 #uses the M[t][b][(i,j)][|I|,|U|,|D1|,|D2|]
-# M[t][b][(i,j)][|I|,|U|,|D1|,|D2|]
+# M{type:{bin:{(i,j):[|I|,|U|,|D1|,|D2|]}}}
 # (i,j): (caller_i, caller_j)
 # The sizes of I (intersection), U(Union), D1 (distance of C1) and D2 (distance of C2)
+# Return D{type:{bin:{(i,j):dis}}}, dis is the distance
 def pooled_distance(M,mode='j'):
     D,NN = {},{}
     for t in M:
@@ -777,7 +785,7 @@ def pooled_distance(M,mode='j'):
 
 #given prior and new data smooth based on the magnitude
 #of observations for the features for each pair
-# J[t][b][(i,j)][|I|,|U|,|D1|,|D2|]
+# J_new{type:{bin:[(i,j)][|I|,|U|,|D1|,|D2|]}}
 # (i,j): (caller_i, caller_j)
 # The sizes of I (intersection), U(Union), D1 (distance of C1) and D2 (distance of C2)
 def additive_magnitude_smoothing(J,J_new,k=None):
@@ -923,14 +931,16 @@ def sum_pairs(P):
                 S[t][b] += [np.sum(row)/np.float128(len(row)-1)]
     return S
 
-#e: [(id1,id2,...)] = weight
+#e:(i,j,k,...):weight. i,j,k mean all combination of callers.
 def exp_hist(e):
     h = {}
     for g in e:
         if h.has_key(e[g]): h[e[g]] += [g]
         else:               h[e[g]]  = [g]
+
     return np.array([[v,len(h[v])] for v in sorted(h)])
-    
+
+# e(i,j,k,...):weight. i,j,k mean all combination of callers.    
 def exp_stats(e,e_post,a):
     if a < np.float128(1.0):
         # H: {(weight1,weight2,...), len_of_caller]
@@ -958,7 +968,7 @@ def exp_stats(e,e_post,a):
 #given the old group expectation E and cutoff t,b value alpha
 #estimates a alpha_post value that uses the histogram of the
 #posterior estimate E_post to adjust the alpha value
-# E[t][b][(id1,id2,...)] = weight
+# E{type:{bin:{(i,j,k,...):weight}}}. i,j,k mean all combination of callers.
 def post_filter_cutoff(E,E_post,alpha):
     alpha_post = {}
     for t in E:
@@ -970,14 +980,15 @@ def post_filter_cutoff(E,E_post,alpha):
 #given the target T and Group G with distance calculation D and Nearest Neibors NN
 #compute the weight of the group which is its expected value given a pileup
 # g is the combination of all callers.
-# D[t][b][(i,j)]: distance between callers i and j. The ditance is 1-(|I|/|U|).
+# D{type:{bin:{(i,j):dis}}}. The ditance (dis) is 1-(|I|/|U|).
 # NN[t][b][k] = [[dis_k_i, caller_i], [dis_k_j, caller_j],...,[dis_k_n, caller_n]]; k is a caller ID.
 def group_weight(g,k,D,NN,t,b):
     L,Q,w = [],[],np.float128(0.0)
-
-    for i in range(0, len(g) - 1):
+    """
+    for i in range(len(g) - 1):
         for j in range(i + 1, len(g)):
-            if D[t][b].has_key((g[i],g[j])): L += [np.float128(1.0)-D[t][b][(g[i],g[j])]]
+            if D[t][b].has_key((g[i],g[j])):   L += [np.float128(1.0)-D[t][b][(g[i],g[j])]]
+            elif D[t][b].has_key((g[j],g[i])): L += [np.float128(1.0)-D[t][b][(g[j],g[i])]]
     return np.float128(1.0)-np.float128(np.prod(L))
 
     """
@@ -991,43 +1002,49 @@ def group_weight(g,k,D,NN,t,b):
             if i > 0: c = NN[t][b][Q[i]][j][0]        
             L += [np.float128(1.0)-(np.float128(1.0)-D[t][b][(k,Q[i])])*c]
         w = np.float128(1.0)-np.float128(np.prod(L))
-    """
+
     return w
+   
 
 
 #for all types and bins precompute all group weights
 #M is the all pair all sample magnitudes (expected distance matrix input)
 #k is the target key to use to calculate optimal groups in M[t][b] on
-# M[t][b][(i,j)][|I|,|U|,|D1|,|D2|]
+# M{type:{bin:{(i,j):[|I|,|U|,|D1|,|D2|]}}}
 # (i,j): (caller_i, caller_j)
 # The sizes of I (intersection), U(Union), D1 (distance of C1) and D2 (distance of C2)
 def all_group_weights(M,k,mode='j'):
     W = {}      
-    # D[t][b][(i,j)]: distance between callers i and j. The ditance is 1-(|I|/|U|).
+    # D{type:{bin:{(i,j):dis}}}. The ditance (dis) is 1-(|I|/|U|).
     # NN[t][b][k] = [[dis_k_i, caller_i], [dis_k_j, caller_j],...,[dis_k_n, caller_n]]; k is a caller ID.
+    # TODO: why do we pooled_distance again? We have done it in FusorSV.py.
     D,NN = pooled_distance(M,mode) # TODO: why do we calculate again?
     for t in M:
         W[t] = {}
         for b in M[t]:
             W[t][b] = {}
             C =  set([v for w in M[t][b] for v in w]).difference(set([k]))
-            for i in range(1,len(C)+1): #generate combinations
+            for i in range(1,len(C)+1): #generate all combinations. 
+                #For example, (1,2,3) -> (1), (2), (3), (1,2), (1,3) (2,3), (1,2,3)
                 for g in [tuple(sorted(x,reverse=False)) for x in it.combinations(C,i)]:
-                    #W[t][b][g] = group_weight(g,k,D,NN,t,b) #TODO: Should k be replaced by i?
-                    W[t][b][g] = group_weight(g,g[0],D,NN,t,b)
+                    # It seems that for a single caller, the w is one.
+                    # Does this mean we prefer single caller?
+                    W[t][b][g] = group_weight(g,k,D,NN,t,b) #TODO: Should k be replaced by g[0]?
+                    #W[t][b][g] = group_weight(g,g[0],D,NN,t,b)
     return W
 #::::::::: optimal group selection ::::::::::::::::::::::::::::x
 
 #given the type and bin, select an optimal group for pileup
 #:::TO DO:::with each i in g: (i,)>alpha and CU{i}>C+alpha/2
 #don't have to worry about the target key here as it has been applied
-# W[t][b][(id1,id2,...)] = weight
+# W{type:{bin:{(i,j,k,...):weight}}}. i,j,k mean all combination of callers.
 def select_groups(W,gamma=0.0):
     G = {}
     for t in W:
         G[t] = {}
         for b in W[t]:
             C,G[t][b] = [],{}
+            """
             for g in W[t][b]:
                 if W[t][b][g]>=gamma: G[t][b][g] = W[t][b][g]
             """
@@ -1040,7 +1057,7 @@ def select_groups(W,gamma=0.0):
                 for i in range(1,len(C)+1):
                     for j in it.combinations(C,i):
                         G[t][b][j] = W[t][b][j]
-            """
+            
     return G
                 
 #pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp  
@@ -1166,15 +1183,24 @@ def merge_y(Y1,Y2):
 #returns G[g][d][C[g]=>i, C[g][wx]] 
 #as well as a flattened combination list for use
 #with existing join_y,join_idx functions
-#key f G are the coordinates x1,x2
+#keys of G are the coordinates x1,x2
+# C{(caller,):[svult,...],(caller,):[svult,...],...}
 def weight_graph(C):
     G,X = {},[]
+    # For example: 
+    # If we have two callers (keys) in C, we sort keys first.
+    # There are 3 and 2 svult for the first and second callers.
+    # c_i = {(caller_1,):0, (caller_2,):3}. The key of a caller is its index for i_c.
+    # i_c = {0:(caller_1,), 1:(caller_1,), 2:(caller_1,), 3:(caller_2,), 4:(caller_2,)}
     c_i,i_c = group_indecies(C)
-    if len(i_c)>0:
+    if len(i_c)>0: # if len(i_c) == 0 means we don't have any svult for this sample.
         for g in sorted(C.keys()):
             X += C[g]
-            for i in range(len(C[g])):
+            for i in range(len(C[g])): # The index of svults of caller ID g.
                 for j in range(2): #just for x:wx for now
+                    # keys of G are the coordinates x1,x2 and the format is {g:{j:[i+c_i[g],C[g][i][4]]}}
+                    # Example of G
+                    # {1968422913: {(18,): {0: [25675, 1.0]}, (17,): {0: [17138, 1.0], 1: [17137, 1.0]}}, 2286034950: {(4,): {1: [975, 1.0]}}}
                     if G.has_key(C[g][i][j]):
                         if G[C[g][i][j]].has_key(g):
                             G[C[g][i][j]][g][j] = [i+c_i[g],C[g][i][4]]
@@ -1182,13 +1208,16 @@ def weight_graph(C):
                             G[C[g][i][j]][g] = {j:[i+c_i[g],C[g][i][4]]} 
                     else:
                         G[C[g][i][j]] = {g:{j:[i+c_i[g],C[g][i][4]]}}
+
         last = sorted(G.keys())[-1]+2          #get last x2 value in G
         G[last] = {(None,):{None:[None,None]}} #to pad out a terminal vertex
+
     return X,G,c_i,i_c
 
 #given the sorted keys of C
 #calculate the offset you need to add to each groups
 #index to resolve the correct row entry
+# C{(caller,):[svult,...],(caller,):[svult,...],...}
 def group_indecies(C):
     c_i,i_c,i = {},{},0
     for g in sorted(C.keys()):
@@ -1204,6 +1233,7 @@ def get_x_i(A):
 #A or active edges gets put into here, need to see what A is doing
 #and be able to use the selected groups here instead
 #::::TO DO... set pileup to avergae or don't use gamma value =0.0
+# A{(18,): {0: [25675, 1.0]}, (17,): {0: [17138, 1.0], 1: [17137, 1.0]}}
 def get_weight(A,E,average=0):
     if E.has_key((None,)): #default average weighting when no target is available
         if average>0:        #to do is to connect the independant expectations here
@@ -1213,22 +1243,29 @@ def get_weight(A,E,average=0):
         else:
             w = np.float128(0.0) #0.0
     else:
-        w = E[tuple(sorted([a[0] for a in A]))]
+        w = E[tuple(sorted([a[0] for a in A]))] # Get the caller combination and lookup E
     return w
     
 #active edges A, next vertext edges B
 #clear off terminal edges of A and add B
+# A format, {0: [845, 1.0]} where 845 is the index to X.
+# 0 means the reference bengin and 1 means the reference end.
+# A{(18,): {0: [25675, 1.0]}, (17,): {0: [17138, 1.0], 1: [17137, 1.0]}}.
 def del_edges(A):
     k = A.keys()
     for i in range(len(k)): #take off the keys that have a 1
+        # 1 means the variant ends.
         if A[k[i]].has_key(1):
             #print('pop:%s'%k[i])
             A.pop(k[i])  
 
 #active edges A, next vertext edges B
 #clear off terminal edges of A and add B
+# A and B format, {(18,): {0: [25675, 1.0]}, (17,): {0: [17138, 1.0], 1: [17137, 1.0]}} where 845 is the index to X
+# , where 845 is the index to X.
+# 0 means the reference bengin and 1 means the reference end.
 def add_edges(A,B): 
-    for k in B:
+    for k in B: # the callers combination
         if A.has_key(k):
             for i in B[k]: #put the new keys of E into A
                 #print('push:%s,%s'%(k,i))
@@ -1239,24 +1276,44 @@ def add_edges(A,B):
     
 #given a pileup graph g scan the sorted indecies
 #added the dynamic table lookup W
+# X[svult,...]
+# c_i and i_c: for example: 
+# If we have two callers (keys) in C, we sort keys first.
+# There are 3 and 2 svult for the first and second callers.
+# c_i = {(caller_1,):0, (caller_2,):3}. The key of a caller is its index for i_c.
+# i_c = {0:(caller_1,), 1:(caller_1,), 2:(caller_1,), 3:(caller_2,), 4:(caller_2,)}
+# G:
+# keys of G are the coordinates x1,x2 and the format is {g:{j:[i+c_i[g],C[g][i][4]]}}
+# Example of G
+# {1968422913: {(18,): {0: [25675, 1.0]}, (17,): {0: [17138, 1.0], 1: [17137, 1.0]}}, 2286034950: {(4,): {1: [975, 1.0]}}
+# EW:
+# EW{(i,j,k,...):weight}. i,j,k mean all combination of callers.
 def apply_weight_graph(X,G,c_i,i_c,EW,average=0):
     P,V,A,B,D = [],[],{},{},set([])
     if len(X)>0:
         t = X[0][2] #get the type
         V = sorted(G.keys())  #V are the sorted vertices (x1,x2 values)
         for i in range(0,len(V)-1):     #scan i-1,i,i+1 up to padding
-            B = G[V[i]]                 #get edges for v[i+1]
+            print "A"
+            print A
+            # B: {0: [845, 1.0]} where 845 is the index to X.
+            B = G[V[i]]                 #get edges for v[i+1]. Get the coordinate.
             D = {m for l in [G[V[i]][k] for k in G[V[i]]] for m in l}  #check edge direction for i
             if len(A) <= 0:         #[1] len(a) <= 0 (f has 0 edge)   #section starting, start new  p+=[]
                 #section is starting
+                # A and B format, {(18,): {0: [25675, 1.0]}, (17,): {0: [17138, 1.0], 1: [17137, 1.0]}} where 845 is the index to X.
                 add_edges(A,B)
+                # get_x_i returns a list of indecies into X, given an edge in G
+                # Return: [A[g][A[g].keys()[0]][0] for g in A]
                 x_i =  get_x_i(A)
+                # Return: EW[tuple(sorted([a[0] for a in A]))]. a[0] is the index of X (x_i).
                 w   =  get_weight(A,EW,average)
                 P += [[np.uint32(V[i]),np.uint32(V[i]),t,join_y(X,x_i,3),w,w,join_idx(X,x_i,6)]]
                 #check for singles and new section together   
+                # D == set([0,1]) means we have the next section continues at this position.
                 if D == set([0,1]): #check for singles
                     #print('vertex i=%s'%i)
-                    del_edges(A)    #clean the singles
+                    del_edges(A)    #clean the singles; remove svult with A[G[V[i]]][g].has_key(1)
                     if len(A)>0:    #with new sections that are not singles
                         x_i =  get_x_i(A)
                         w   =  get_weight(A,EW,average)
@@ -1275,7 +1332,7 @@ def apply_weight_graph(X,G,c_i,i_c,EW,average=0):
                     w   =  get_weight(A,EW,average)
                     P += [[np.uint32(V[i]),np.uint32(V[i]),t,join_y(X,x_i,3),w,w,join_idx(X,x_i,6)]]
                 if D == set([0,1]): #[3] len(a) > 0 and f has 0 and 1 #close subsection, set single p[-1],p+=[]
-                    #close the last open section
+                    #close the last open section and merge
                     x_i =  get_x_i(A)                                
                     P[-1][1] = np.uint32(V[i]-1)                     
                     P[-1][3] = merge_y(P[-1][3],join_y(X,x_i,3))     
@@ -1306,13 +1363,16 @@ def apply_weight_graph(X,G,c_i,i_c,EW,average=0):
                         P += [[np.uint32(V[i]+1),np.uint32(V[i]+1),t,join_y(X,x_i,3),w,w,join_idx(X,x_i,6)]]
     for p in P: #clean up dangling sections
         if p[1]<p[0]: P.remove(p)    
+    print "P"
+    print P
     return P   
 #pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp
 
 #need to check average behavior...
 #given the partition P[t][b][c][s]
 #this will work without the key k 
-# E[t][b][(id1,id2,...)] = weight
+# P{type:{bin:{caller:{sample_name:[svult, svult,...,svult]}}}}
+# E{type:{bin:{(i,j,k,...):weight}}}. i,j,k mean all combination of callers.
 def pileup_group_by_sample(P,E,true_key=(0,),average=0):
     A = {}
     for t in P:
@@ -1327,6 +1387,8 @@ def pileup_group_by_sample(P,E,true_key=(0,),average=0):
                 for s in P[t][b][c]:
                     if Q.has_key(s): Q[s][(c,)] = P[t][b][c][s] #the svult
                     else:            Q[s] = {(c,):P[t][b][c][s]}
+                    
+            # Q{sample:{(caller,):{svult,...},(caller,):{svult,...},...}}
             #swap out P[t][b][c][s] => P[t][b][s][c]       
             for s in Q.keys(): #now apply to each sample, if calls are avaible, otherwise use the average
                 GS = copy.deepcopy(G)             #don't use the target in this calculation      
@@ -1335,8 +1397,15 @@ def pileup_group_by_sample(P,E,true_key=(0,),average=0):
                 C = {}
                 for i in GS:
                     if Q[s].has_key(i): C[i] = copy.deepcopy(Q[s][i])
+                # C{(caller,):[svult,...],(caller,):[svult,...],...}
+                # X = [svult,svult,...]
+                # W{1968422913: {(18,): {0: [25675, 1.0]}, (17,): {0: [17138, 1.0], 1: [17137, 1.0]}}, 2286034950: {(4,): {1: [975, 1.0]}}}
+                # 0 means the reference begin while 1 means the reference end.
+                # 25675 is the index to X.
                 X,W,c_i,i_c = weight_graph(C)
+                # Return is svult format.
                 A[t][b][s] = apply_weight_graph(X,W,c_i,i_c,E[t][b],average)
+
     return A
 
 #setup partitioned target by sample
@@ -1491,6 +1560,8 @@ def alpha_samples_step(A,T,t,b,alpha,step):
     return J
 
 #apply the filter with given alpha values fuse step
+# A{type:{bin:{sample_name:[svult]}}}
+# E_post{type:{bin:{(i,j,k,...):weight}}}. i,j,k mean all combination of callers.
 def filter_pileup_by_sample(A,alpha,E_post=None,wx=4,wy=5,idx=6,leave_in=True):
     F = {}
     if E_post is None:
@@ -1554,6 +1625,7 @@ def filter_single_bin(a,f,leave_in=False):
 
 #filter a pileup call set a using cuttoff f
 #this merge will now average weight by svlen contribution
+# A{type:{bin:{sample_name:[svult]}}}
 def filter_bin(A,alpha,t,b,s=None,E_post=None,wx=4,wy=5,idx=6,leave_in=False):
     C = []
     if s is not None: a = A[t][b][s]
@@ -1576,17 +1648,27 @@ def filter_bin(A,alpha,t,b,s=None,E_post=None,wx=4,wy=5,idx=6,leave_in=False):
                     C += [a[i]+[0.0,0.0]+a[i]+[-1]]
     else:
         if E_post is None:
-            for i in range(len(a)):
+            for i in range(len(a)): # all svults belong to the sample.
                 if a[i][wx]>=alpha[t][b] and a[i][wy]>=alpha[t][b]:
                     C += [a[i]]
+            # Why merge again?
             C = fu.merge_regions(C)
         else:
-            for i in range(len(a)):
-                g = tuple(sorted(a[i][idx]))
+            for i in range(len(a)): # all svults belong to the sample.
+                g = tuple(sorted(a[i][idx])) # get all caller IDs that support this variant.
+                if a[i][0] == 468345633 or a[i][0] == 468345632:
+                    print "before filter:"
+                    print a[i]
+                    print g
                 if E_post[t][b].has_key(g):
                     xw = yw = E_post[t][b][g]
+                    if a[i][0] == 468345633 or a[i][0] == 468345632:
+                        print "alpha"
+                        print alpha[t][b]
+                        print E_post[t][b][g]
                     if a[i][wx]>=alpha[t][b] and a[i][wy]>=alpha[t][b]:
                         C += [a[i][0:wx]+[xw,yw]+a[i][wy+1:]+[1]]
+            # Why merge again?
             C = fu.merge_regions(C)    
     return C
 #given a piled and filtered set, merge back into one call set
@@ -1616,14 +1698,17 @@ def overlap(c_i0,c_i1,c_j0,c_j1,check_x=True,check_y=False):
 
 #this could be done using a merging weight graph
 #this is the entry point for updating the E[g] values?
+# C1[svult,svult,...]
 def append_bin(C1,C2,cutoff=0.0):
     A,B,C3 = {},{},[]
     n,m = len(C1),len(C2)
     if m > 0:
         for i in range(n): #find the overlapping indexcies of C2 to C1
             for j in range(m):
+                # Return (U-I)/U
                 c = overlap(int(C1[i][0]),int(C1[i][1]),int(C2[j][0]),int(C2[j][1]))
                 if c > cutoff:
+                    # C1[i] overlaps with C2[j]
                     if A.has_key(j): A[j] += [i]
                     else:            A[j]  = [i]                    
                     if B.has_key(i): B[i] += [j]
@@ -1639,8 +1724,10 @@ def append_bin(C1,C2,cutoff=0.0):
     else:
         C3 = C1
     return C3   
-    
+
 #given a piled and filtered set, merge back into one call set
+# F{type:{bin:{sample_name:[svult,svult,...]}}}a
+# Return M{type:[svult,svult,...]}
 def merge_filtered_sample(F,s,cutoff=0.0):
     M = {}
     if cutoff>0.0:
@@ -1666,10 +1753,13 @@ def merge_caller_samples(Q,C,c,snames):
             Q[t][c][s] = C[t][s]
 
 #given the original Q[t][c][s] insert a merged F[t][b][s]
+# Q{type:{caller:{sample:[svult1, svult2,...,svultN]}}}
+# F{type:{bin:{sample_name:[svult,svult,...]}}}
 def merge_filtered_samples(Q,F,c,snames,exclude,cutoff):
     N = {}
     for s in snames:
         if s not in exclude:
+            # Return {type:[svult,svult,...]}
             N[s] = merge_filtered_sample(F,s,cutoff)
     for t in Q:
         Q[t][c] = {}
@@ -1721,11 +1811,12 @@ def score_sample(S,k,F,self_merge=True):
     return T
 
 #temperary helper function for viewing
-# Q[t][c]{sample_name: [ele1, ele2,...,eleN]}
+# Q{types:{caller:{sample:[svult1, svult2,...,svultN]}}}
 def pretty_stats(Q,types,t,k,c_id,sname,r=0.5,verbose=True):
     C1,C2 = [],[]
     if Q[t].has_key(k) and Q[t][k].has_key(sname):       C1 = Q[t][k][sname]
     if Q[t].has_key(c_id) and Q[t][c_id].has_key(sname): C2 = Q[t][c_id][sname]            
+    # Return: {'n':n,'m':m,'n:m':a,'m:n':b,'j':W,'b':X,'d1_ids':d1_i,'d2_ids':d2_i}
     s = fu.metric_score(C1,C2,r,self_merge=False,d1_ids=True,d2_ids=True)
     q = fu.metric_score(C1,C2,r,self_merge=True,d1_ids=False,d2_ids=False)
     d2_ids,ids = s['d2_ids'],[]               #now get the idx indecies from C1

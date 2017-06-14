@@ -128,15 +128,16 @@ def partition_call_sets(sample,k,O,R,B,chroms,flt,flt_exclude,caller_exclude):
     sname = sample[sample.rfind('/')+1:]                      #extract sample identifier
     print('reading sample %s'%sname)
     sname_partition_path = out_dir+'/svul/'+sname                            #build path
-    # S[c][t][ele1, ele2,...,eleN]: c: caller and t: type
-    # ele spec: [ref_begin, ref_end, [[0, 0]], 1.0, 1.0, {caller_ID: set([series_ID_in_VCF])}]
-    # example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
+    # S{caller:{type:[svult,svult,...]}} c: caller and t: type
+    # svult spec: [ref_begin, ref_end, [[0, 0]], 1.0, 1.0, {caller_ID: set([series_ID_in_VCF])}]
+    # example svult: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
+    # We don't use V any futher.
     S,V = su.vcf_glob_to_svultd(sample+'/*vcf',chroms,O,flt=flt,flt_exclude=flt_exclude)
-    #i this step will filter calls in S if positions overlap with svmasks
+    # This step will filter calls in S if positions overlap with svmasks
     S = su.filter_call_sets2(S,R,exclude=flt_exclude)                                  
-    # Q[t][c]{sample_name: [ele1, ele2,...,eleN]}
+    # Q{type:{caller:{sample_name:[svult,svult,...]}}}
     Q = fusor.slice_samples([[sname,S]])                                         #legacy
-    # P[t][b]{caller:{sample_name:[ele1, ele2,...,eleN]}}, b is bin size (variation size)
+    # P{type:{bin:{caller{sample_name:[svult,svult,...]}}}}, bin: variant size.
     P = fusor.partition_sliced_samples(Q,B,exclude=caller_exclude)            #partition
     success = fusor.write_partitions_by_sample(sname_partition_path,P)    #write to disk
     return [sname,success]                                   #report back to async queue
@@ -176,6 +177,23 @@ def prior_model_partition(snames,t,b,k,callers,caller_exclude,min_g,brkpt_smooth
     return [(t,b),J,D,E,alpha,K]
 #[3a] Fit the Model Partition----------------------------------------------------------------------------
 
+"""
+def fileoutput(filename,Z, T, B):
+   
+    f = open(filename,'w')
+    for t in Z:
+        f.write("Type ID:%d; type name:%s\n" %(t,T[t]))
+        for b in Z[t]:
+            f.write("\tBin ID:%d; len:%d\n" %(b, B[t][b]))
+            for e in Z[t][b]:
+                f.write("\t\tcaller:{0}".format(e))
+                f.write("; exp:{0:.15f}\n" .format(Z[t][b][e]))
+            #f.write("\tBin ID:%d; len:%d\n" %(b, B[t][b]))
+            #f.write("\t\talpha:{0:.15f}\n" .format(Z[t][b]))
+    f.close()
+"""    
+    
+
 #[3b] Posterior Estimation Partition---------------------------------------------------------------------
 def post_model_partition(apply_fusion_model_path,snames,t,b,k,callers,caller_exclude,min_g):
     print('starting posterior estimate on partition:\tt=%s\tb=%s'%(t,b))
@@ -183,23 +201,26 @@ def post_model_partition(apply_fusion_model_path,snames,t,b,k,callers,caller_exc
     #[1] load prior model values----------------------------------------
     B,J,D,E,alpha,n,K = fusor.import_fusion_model(apply_fusion_model_path)      #import the existing model
     #[2] load new input data partitions
-    # P[t][b]{caller:{sample_name:[ele1, ele2,...,eleN]}}, b is bin size (variation size)
-    # example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
+    # P{type:{bin:{caller:{sample_name:[svult, svult,...,svult]}}}}
+    # example svult: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
     P = fusor.read_partitions_by_caller(out_dir+'/svul/',callers,caller_exclude,t,b,False)   #all samples
-    # J_new[t][b][(i,j)][|I|,|U|,|D1|,|D2|]
+    # J_new{type:{bin:{(i,j):[|I|,|U|,|D1|,|D2|]}}}
     # (i,j): (caller_i, caller_j)
     # The sizes of I (intersection), U(Union), D1 (distance of C1) and D2 (distance of C2)
     J_new = fusor.all_samples_all_pairs_magnitudes(P,snames)                 #pool all feature magnitudes
     #[3] construct the posterior estimator using:        the prior data, new data and imputed true row==k
     J_post = fusor.additive_magnitude_smoothing(J,J_new,k)        #k is used to swap a row J_prime into J
-    # D_post[t][b][(i,j)]: distance between callers i and j. The ditance is 1-(|I|/|U|).
+    # D_post{type:{bin:{(i,j):dis}}}
+    # Distance between callers i and j. The ditance is 1-(|I|/|U|).
     # NN[t][b][k] = [[dis_k_i, caller_i], [dis_k_j, caller_j],...,[dis_k_n, caller_n]]; k is a caller ID.
     #    dis_i_j is sorted.
     D_post,NN_post = fusor.pooled_distance(J_post)                      #get the new data distance matrix
-    # W[t][b][(id1,id2,...)] = weight
+    # W{type:{bin:{(i,j,k,...):weight}}}. i,j,k mean all combination of callers.
     W_post = fusor.all_group_weights(J_post,k,mode='j')  #calculate the pooled D,NN and all group weights
-    # E[t][b][(id1,id2,...)] = weight
-    E_post = fusor.select_groups(W_post,min_g)                         #gamma is a group selection cutoff 
+    # E_post{type:{bin:{(i,j,k,...):weight}}}. i,j,k mean all combination of callers.
+    # Return weight > min_g.
+    E_post = fusor.select_groups(W_post,min_g)                         #gamma is a group selection cutoff
+    # alpha_post{type:{bin:alpha}}
     alpha_post = fusor.post_filter_cutoff(E,E_post,alpha)                       #updated filter estimates
     stop = time.time()
     print('posterior estimate on partition:\tt=%s\tb=%s\t%s sec\talpha=%s'%(t,b,round(stop-start,2),
@@ -239,21 +260,31 @@ def apply_model_to_samples(sample,ref_path,chroms,types,bins,callers,O,
         if verbose: print('loading base and posterior estimate partitions for %s'%sname)        
         B,J,D,E,alpha,n,K = fusor.import_fusion_model(apply_fusion_model_path)          #import prior model
         B,J_post,D_post,E_post,alpha_post,n_post,K = fusor.import_fusion_model(model_path) #import new data
+        #[2] load new input data partitions
+        # P{type:{bin:{caller:{sample_name:[svult, svult,...,svult]}}}}
+        # example svult: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
         P = fusor.read_partitions_by_sample(partition_path,sname)            #read all partitions for sname
+        # Q{type:{caller:{sample:[svult1, svult2,...,svultN]}}}
+        # Sorted by reference_begin svult[0]
         Q = fusor.unpartition_sliced_samples(P)                              #unpartition for merging later
-        # E[t][b][(id1,id2,...)] = weight
+        # E{type:{bin:{(i,j,k,...):weight}}}. i,j,k mean all combination of callers.
+        # Return A{type:{bin:{sample_name:[svult,svult,...]}}}
+        # Example A[t][b][s] = [21001, 29001, 2, [[0, 0]], 0.041928642833720149142, 0.041928642833720149142, {9: set([1])}]
         A = fusor.pileup_group_by_sample(P,E,(k,))                    #projection of all calls for a sample                    
+        # F{type:{bin:{sample_name:[svult,svult,...]}}}
         F = fusor.filter_pileup_by_sample(A,alpha,E_post,leave_in=False)         #filter cutoff in the mode
         if smoothing:
             #now do breakpoint smoothing algorithm---------------------------------------------------------
             F = fusor.best_smooth_brkpt_samples(F,K,P)
             #now do breakpoint smoothing algorithm---------------------------------------------------------
+        # For here we assign calls to f_id which is -1.
+        # Append all calls in Q[t][-1].
         fusor.merge_filtered_samples(Q,F,f_id,snames,[],over_m)      #expectation priorty merge back result
     #[2] do some scoring and write out the sample results, returning for global performance----------------
     start = time.time()
-    # Q[t][c]{sample_name: [ele1, ele2,...,eleN]}
+    # Q{types:{caller:{sample:[svult1, svult2,...,svultN]}}}
     for t in Q:                                  #give the metrics for each sample and write out the result
-        for c in set(cross_fold_stats).difference(set([f_id,k])):
+        for c in set(cross_fold_stats).difference(set([f_id,k])): # c is the caller ID.
             if verbose: print('%s%s'%(callers[c],''.join(['-' for i in range(80)])))   #other callers first
             cross_fold_stats[c][t] += [fusor.pretty_stats(Q,types,t,k,c,sname,r,verbose)]
         if verbose: print('fusorSV%s'%(''.join(['-' for i in range(80)])))                    #then fusorSV
@@ -263,6 +294,7 @@ def apply_model_to_samples(sample,ref_path,chroms,types,bins,callers,O,
             C[t] = Q[t][f_id][sname]
             for i in cross_fold_stats[f_id][t][-1][6]:
                 C[t][i][IDX][k] = [-1]                             #flag the idx with the target key and -1
+
     if verbose: print('writing VCF for %s'%sname)
     G = su.svult_to_genome(C,O)                                               #start conversion back to VCF
     hist[sname] = su.genome_to_vcf(G,ref_seq,types,chroms,callers,
@@ -338,8 +370,7 @@ if __name__ == '__main__':
     B[2] = [1,50,100, 400, 600, 950, 1250, 1550, 1950, 2250, 2950, 3650, 4800, 6150, 9000, 18500, 100000, 10000000]
     B[3] = [1,50,500,1000,5000,10000,50000,250000,10000000]
     B[5] = [1,50,100,250,500,1000,2500, 3500, 45000, 80000, 115000, 180000, 260000, 300000, 500000, 1000000]
-    #types = {0:'SUB',1:'INS',2:'DEL',3:'DUP',4:'CNV',5:'INV',6:'TRA',7:'BND'}
-    types = {3:'DUP'}
+    types = {0:'SUB',1:'INS',2:'DEL',3:'DUP',4:'CNV',5:'INV',6:'TRA',7:'BND'}
     bins  = {t:su.pretty_ranges(B[t],'') for t in B}
     partition_path = out_dir+'/svul/'
     total_partitions = len(glob.glob(partition_path+'*.pickle'))

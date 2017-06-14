@@ -163,12 +163,16 @@ def log1p_feature_magnitudes(list C1, list C2, bint self_merge=False):
 @cython.boundscheck(False)
 @cython.nonecheck(False)
 # Given the lists from two different callers
+# C1 and C2 are lists of svult.
+# C1 = [svult,svult,...]
+# exmple svult: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
 # Return [I,U,D1,D2]
 # Return the sizes of I (intersection), U(Union), D1 (distance of C1) and D2 (distance of C2)
 def feature_magnitudes(list C1, list C2, bint self_merge=False):
     cdef long i
     cdef double f1,f2,f3,f4
     if self_merge:    
+        # TODO: We can do this merge outside the pairwise combinations.
         C1 = merge_regions(C1)
         C2 = merge_regions(C2)           
     I,U,D1,D2 = LR(C1,C2)
@@ -438,6 +442,7 @@ cdef unsigned int get_y_mag(list y):
 @cython.boundscheck(False)
 @cython.nonecheck(False)
 @cython.wraparound(False)
+# C is a list, [ref_begin, ref_end, sv_type, [[0, 0]], 1.0, 1.0, {caller_ID: set([series_ID_in_VCF])}]
 cdef unsigned int get_xy_mag(list c):
     cdef unsigned int i,t,x,y
     t,y,x = 0,0,0
@@ -471,9 +476,9 @@ cdef unsigned int get_mag(list C):
 
 @cython.boundscheck(False)
 @cython.nonecheck(False) 
-# C: [ele1, ele2,...,eleN]
-# ele spec: [ref_begin, ref_end, [[0, 0]], 1.0, 1.0, {caller_ID: set([series_ID_in_VCF])}]
-# Return: P[j][ele1, ele2,...,eleN]: j is bin size (variation size)
+# C: [svult, svult,...,svult]
+# svult spec: [ref_begin, ref_end, sv_type, [[0, 0]], 1.0, 1.0, {caller_ID: set([series_ID_in_VCF])}]
+# Return P{bin:[svult, svult,...,svult]}, bin is variant size.
 def partition_by_mag(list C, list B, bint self_merge=False, bint interpolate=False):
     cdef unsigned int i,j,n,b
     cdef double v,w_a,w_b
@@ -751,6 +756,7 @@ cdef list join_y(list C,list x,long p):
 @cython.nonecheck(False)    
 #if the y values fron Y1 and Y2 overlap, merge them together
 #otherwise add them as unique entries and return list of lists
+# Y: [[#,#],[#,#],...]
 cdef list merge_y(list Y1,list Y2):
     cdef long i,j,n,b
     cdef list A,B,F,R
@@ -843,15 +849,16 @@ def join_wy(list C,list x,long p):
 #need to update for y lists y1[3]-y2[4]
 #C[i][4] is the wx which is averaged during a merge step
 #C[i][5] is the wy which is averaged during a merge step
-# C is a list of ele
-# example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
+# C1 is a list of svult.
+# C1 = [svult,svult,...]
+# exmple svult: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
 def merge_regions(list C,check_x=True,check_y=True):
     cdef long i,j,b,n
     cdef list M = []
     n = len(C)
     if n > 0:
         i,W = 0,[]
-        while i < n-1: # i is the index of C
+        while i < n-1: # i is the index of svult inside C.
             j = i+1
             b = C[i][1] # reference end
             while b+1 >= C[j][0] and j < n-1: # C[i] and C[j] overlap.
@@ -1128,9 +1135,10 @@ cdef void orientation_7(list C1,long j1,list C2,long j2,
 
 @cython.boundscheck(False)
 @cython.nonecheck(False)
-# C is a list of ele
-# example ele: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
-# x: range (i,j)
+# Given the lists from two different callers
+# C1 and C2 are lists of svult.
+# C1 = [svult,svult,...]
+# exmple svult: [3137418837, 3137418838, 7, [[0, 0]], 1.0, 1.0, {17: set([34276])}]
 def LR(list C1,list C2):
     cdef long a,b,c,d,j1,j2,n1,n2
     cdef list I,U,D1,D2
